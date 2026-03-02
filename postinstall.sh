@@ -14,15 +14,16 @@
 #    3. Codecs e multimídia
 #    4. Drivers Intel Iris Xe
 #    5. Gerenciamento de energia (TLP)
-#    6. Hardware (Wi-Fi, Bluetooth, Suspend)
-#    7. GNOME
-#    8. Desenvolvimento (.NET + VS Code + extensões C#)
-#    9. Flathub
-#   10. Snapper (snapshots Btrfs automáticos)
-#   11. Firewall (verificação + perfil dev)
-#   12. Fontes Microsoft + renderização
-#   13. Zsh + Oh My Zsh
-#   14. Docker / Podman
+#    6. Tuned (Perfil de Performance)
+#    7. Hardware (Wi-Fi, Bluetooth, Suspend)
+#    8. GNOME
+#    9. Desenvolvimento (.NET + VS Code + extensões C#)
+#   10. Flathub
+#   11. Snapper (snapshots Btrfs automáticos)
+#   12. Firewall (verificação + perfil dev)
+#   13. Fontes Microsoft + renderização
+#   14. Zsh + Oh My Zsh
+#   15. Docker / Podman
 # =============================================================================
 
 set -uo pipefail
@@ -30,7 +31,7 @@ set -uo pipefail
 # --- Arquivos de controle ---
 LOG_FILE="/tmp/postinstall.log"
 STEP_FILE="/tmp/.postinstall_step"
-TOTAL_STEPS=14
+TOTAL_STEPS=15
 
 # --- Cores ---
 RED='\033[0;31m'
@@ -205,10 +206,27 @@ if should_run 5; then
 fi
 
 # =============================================================================
-# ETAPA 6 — HARDWARE (Wi-Fi, Bluetooth, Suspend)
+# ETAPA 6 — TUNED (Otimização de Performance)
 # =============================================================================
-if should_run 6; then
-  section 6 "Configurando hardware (Wi-Fi, Bluetooth, Suspend)"
+if should_run 6; then # Ou ajuste a numeração conforme sua sequência
+  section 6 "Configurando Tuned (Perfil de Performance)"
+
+  dnf_install tuned
+  sudo systemctl enable --now tuned 2>&1 | tee -a "$LOG_FILE"
+
+  # Para o seu VAIO (Laptop), o perfil 'throughput-performance' é excelente para compilação .NET
+  # mas o 'accelerate-performance' ou 'balanced' também são opções.
+  sudo tuned-adm profile throughput-performance 2>&1 | tee -a "$LOG_FILE"
+
+  success "Tuned configurado para máxima performance de I/O e CPU"
+  save_step 6
+fi
+
+# =============================================================================
+# ETAPA 7 — HARDWARE (Wi-Fi, Bluetooth, Suspend)
+# =============================================================================
+if should_run 7; then
+  section 7 "Configurando hardware (Wi-Fi, Bluetooth, Suspend)"
 
   dnf_install \
     iwl7260-firmware \
@@ -232,14 +250,14 @@ if should_run 6; then
 
   sudo systemctl restart systemd-logind 2>&1 | tee -a "$LOG_FILE"
   success "Hardware configurado"
-  save_step 6
+  save_step 7
 fi
 
 # =============================================================================
-# ETAPA 7 — GNOME
+# ETAPA 8 — GNOME
 # =============================================================================
-if should_run 7; then
-  section 7 "Ajustando GNOME"
+if should_run 8; then
+  section 8 "Ajustando GNOME"
 
   dnf_install gnome-tweaks gnome-extensions-app dconf-editor
 
@@ -249,14 +267,14 @@ if should_run 7; then
 
   _log "gsettings aplicados"
   success "GNOME configurado"
-  save_step 7
+  save_step 8
 fi
 
 # =============================================================================
-# ETAPA 8 — DESENVOLVIMENTO (.NET + VS Code + extensões C#)
+# ETAPA 9 — DESENVOLVIMENTO (.NET + VS Code + extensões C#)
 # =============================================================================
-if should_run 8; then
-  section 8 "Instalando ambiente de desenvolvimento (.NET + VS Code)"
+if should_run 9; then
+  section 9 "Instalando ambiente de desenvolvimento (.NET + VS Code)"
 
   sudo dnf groupinstall -y "Development Tools" 2>&1 | tee -a "$LOG_FILE"
 
@@ -266,8 +284,8 @@ if should_run 8; then
     neofetch
 
   # .NET SDK
-  info "Instalando .NET SDK 9..."
-  dnf_install dotnet-sdk-9.0
+  info "Instalando .NET SDK 10..."
+  dnf_install dotnet-sdk-10.0
 
   if command -v dotnet &>/dev/null; then
     success ".NET instalado: $(dotnet --version)"
@@ -310,33 +328,33 @@ EOF'
     success "Extensões C#/.NET instaladas"
   fi
 
-  save_step 8
+  save_step 9
 fi
 
 # =============================================================================
-# ETAPA 9 — FLATHUB
+# ETAPA 10 — FLATHUB
 # =============================================================================
-if should_run 9; then
-  section 9 "Configurando Flathub"
+if should_run 10; then
+  section 10 "Configurando Flathub"
 
   flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo \
     2>&1 | tee -a "$LOG_FILE"
 
   success "Flathub configurado"
-  save_step 9
+  save_step 10
 fi
 
 # =============================================================================
-# ETAPA 10 — SNAPPER (snapshots Btrfs automáticos)
+# ETAPA 11 — SNAPPER (snapshots Btrfs automáticos)
 # =============================================================================
-if should_run 10; then
-  section 10 "Configurando Snapper (snapshots Btrfs)"
+if should_run 11; then
+  section 11 "Configurando Snapper (snapshots Btrfs)"
 
   # Verificar se o filesystem raiz é Btrfs
   ROOT_FS=$(findmnt -n -o FSTYPE /)
   if [[ "$ROOT_FS" != "btrfs" ]]; then
     warn "Filesystem raiz não é Btrfs (é: ${ROOT_FS}). Pulando Snapper."
-    save_step 10
+    save_step 11
   else
     dnf_install snapper snap-pac snapper-gui
 
@@ -366,15 +384,15 @@ if should_run 10; then
 
     success "Snapper configurado — snapshots automáticos ativos"
     info "snap-pac criará snapshots automáticos antes/depois de cada dnf"
-    save_step 10
+    save_step 11
   fi
 fi
 
 # =============================================================================
-# ETAPA 11 — FIREWALL (verificação + perfil dev)
+# ETAPA 12 — FIREWALL (verificação + perfil dev)
 # =============================================================================
-if should_run 11; then
-  section 11 "Verificando e configurando Firewall"
+if should_run 12; then
+  section 12 "Verificando e configurando Firewall"
 
   # Garantir que firewalld está ativo
   if ! sudo systemctl is-active --quiet firewalld; then
@@ -412,14 +430,14 @@ if should_run 11; then
   sudo firewall-cmd --list-all 2>&1 | tee -a "$LOG_FILE"
 
   success "Firewall configurado para desenvolvimento"
-  save_step 11
+  save_step 12
 fi
 
 # =============================================================================
-# ETAPA 12 — FONTES MICROSOFT + RENDERIZAÇÃO
+# ETAPA 13 — FONTES MICROSOFT + RENDERIZAÇÃO
 # =============================================================================
-if should_run 12; then
-  section 12 "Instalando fontes Microsoft e melhorando renderização"
+if should_run 13; then
+  section 13 "Instalando fontes Microsoft e melhorando renderização"
 
   # Fontes essenciais
   dnf_install \
@@ -452,14 +470,14 @@ if should_run 12; then
   sudo fc-cache -fv 2>&1 | tee -a "$LOG_FILE"
 
   success "Fontes e renderização configuradas"
-  save_step 12
+  save_step 13
 fi
 
 # =============================================================================
-# ETAPA 13 — ZSH + OH MY ZSH
+# ETAPA 14 — ZSH + OH MY ZSH
 # =============================================================================
-if should_run 13; then
-  section 13 "Instalando Zsh + Oh My Zsh"
+if should_run 14; then
+  section 14 "Instalando Zsh + Oh My Zsh"
 
   dnf_install zsh util-linux-user
 
@@ -519,14 +537,14 @@ EOF
 
   success "Zsh + Oh My Zsh instalados"
   warn "Reinicie o terminal ou execute 'zsh' para usar o novo shell"
-  save_step 13
+  save_step 14
 fi
 
 # =============================================================================
-# ETAPA 14 — DOCKER / PODMAN
+# ETAPA 15 — DOCKER / PODMAN
 # =============================================================================
-if should_run 14; then
-  section 14 "Configurando Docker / Podman"
+if should_run 15; then
+  section 15 "Configurando Docker / Podman"
 
   # Podman já vem no Fedora — garantir que está instalado e configurar
   dnf_install \
@@ -574,7 +592,7 @@ EOF
   info "Versão Podman: $(podman --version)"
   success "Podman configurado (alias docker=podman ativo)"
   warn "Faça logout/login para que o socket do Podman funcione corretamente"
-  save_step 14
+  save_step 15
 fi
 
 
@@ -588,6 +606,7 @@ echo "║  ✔ RPM Fusion habilitado                             ║"
 echo "║  ✔ Codecs de mídia instalados                        ║"
 echo "║  ✔ Driver Intel Iris Xe configurado                  ║"
 echo "║  ✔ TLP (gerenciamento de bateria) ativo              ║"
+echo "║  ✔ Tuned (Perfil de Performance)                     ║"
 echo "║  ✔ Wi-Fi / Bluetooth / Suspend configurados          ║"
 echo "║  ✔ GNOME ajustado                                    ║"
 echo "║  ✔ .NET SDK 9 + VS Code + extensões C# instalados    ║"
