@@ -101,9 +101,9 @@ echo "========================================" >> "$LOG_FILE"
 echo -e "${BOLD}"
 echo "╔══════════════════════════════════════════════════════╗"
 echo "║   Fedora 43 — Pós-instalação VAIO FE15               ║"
-echo "║   Iris Xe | .NET | GNOME | Snapper | Zsh | Docker   ║"
+echo "║   Iris Xe | .NET | GNOME | Snapper | Zsh | Docker    ║"
 echo "╠══════════════════════════════════════════════════════╣"
-printf "║   Log: %-45s║\n" "$LOG_FILE"
+printf "║   Log: %-45s ║\n" "$LOG_FILE"
 printf "║   Progresso: %-41s║\n" "$STEP_FILE"
 echo "╚══════════════════════════════════════════════════════╝"
 echo -e "${NC}"
@@ -227,28 +227,22 @@ fi
 # =============================================================================
 if should_run 7; then
   section 7 "Configurando hardware (Wi-Fi, Bluetooth, Suspend)"
+  
+  dnf_install iwl7260-firmware iwl8000-firmware iwl3160-firmware alsa-utils bluez bluez-tools
 
-  dnf_install \
-    iwl7260-firmware \
-    iwl8000-firmware \
-    iwl3160-firmware \
-    alsa-utils \
-    bluez \
-    bluez-tools
-
-  # Suspend ao fechar a tampa
+  # Suspend ao fechar a tampa (Idempotente)
   LOGIND_CONF="/etc/systemd/logind.conf"
-  if grep -q "^#HandleLidSwitch=" "$LOGIND_CONF" 2>/dev/null; then
+  if ! grep -q "^HandleLidSwitch=suspend" "$LOGIND_CONF"; then
+    # Comenta a linha padrão e adiciona a nova para evitar duplicidade
     sudo sed -i 's/^#HandleLidSwitch=.*/HandleLidSwitch=suspend/' "$LOGIND_CONF"
-    success "Configurado suspend ao fechar a tampa"
-  elif ! grep -q "^HandleLidSwitch=" "$LOGIND_CONF" 2>/dev/null; then
-    echo "HandleLidSwitch=suspend" | sudo tee -a "$LOGIND_CONF" > /dev/null
-    success "Configurado suspend ao fechar a tampa"
-  else
-    info "HandleLidSwitch já configurado"
+    # Caso a linha nem exista (raro), adiciona ao fim
+    grep -q "^HandleLidSwitch=suspend" "$LOGIND_CONF" || echo "HandleLidSwitch=suspend" | sudo tee -a "$LOGIND_CONF" > /dev/null
   fi
 
-  sudo systemctl restart systemd-logind 2>&1 | tee -a "$LOG_FILE"
+  # PITFALL: NÃO use 'systemctl restart systemd-logind' aqui, pois ele derruba a sessão X11/Wayland 
+  # e mata o script. O logind será atualizado no reboot final do script.
+  info "Configuração de Suspend aplicada (será ativada após o reboot)."
+
   success "Hardware configurado"
   save_step 7
 fi
