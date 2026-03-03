@@ -819,39 +819,94 @@ if should_run 13; then
     warn "Filesystem raiz não é Btrfs (detectado: ${ROOT_FS}) — pulando Snapper."
     mark_fail 13 "Snapper" "filesystem raiz não é Btrfs (é: ${ROOT_FS})"
   else
-    # snap-pac é para Arch/Pacman e NÃO funciona no Fedora.
-    # python3-dnf-plugin-snapper é para DNF4 e NÃO funciona no DNF5 (Fedora 41+).
-    # Solução correta: libdnf5-plugin-actions + snapper.actions
+    # snap-pac é para Arch/Pacman — NÃO funciona no Fedora.
+    # python3-dnf-plugin-snapper é para DNF4 — NÃO funciona no DNF5 (Fedora 41+).
+    # Solução correta para Fedora 41+: libdnf5-plugin-actions + snapper.actions
     dnf_install "Snapper + DNF5 Actions plugin" \
       snapper \
       btrfs-assistant \
       libdnf5-plugin-actions || STEP_ERRORS=$((STEP_ERRORS+1))
 
-    # Criar configuração para /
-    if ! snapper -c root list &>/dev/null 2>&1; then
-      sudo snapper -c root create-config / 2>&1 | tee -a "$LOG_FILE" \
+    # -----------------------------------------------------------------
+    # Layout padrão Fedora: subvolume @ → / e @home → /home
+    # Configuramos snapper para ambos.
+    # NÃO fazemos snapshot de /var/lib/containers (Podman) — muda
+    # constantemente, snapshots seriam enormes e sem valor para rollback.
+    # -----------------------------------------------------------------
+
+    # Helper: configura snapper para um subvolume
+    configure_snapper() {
+      local cfg="$1"   # nome da config (ex: root, home)
+      local mnt="$2"   # ponto de montagem (ex: /, /home)
+      local hourly="$3" daily="$4" weekly="$5"
+
+      if ! snapper -c "$cfg" list &>/dev/null 2>&1; then
+        sudo snapper -c "$cfg" create-config "$mnt" 2>&1 | tee -a "$LOG_FILE" \
+          || { warn "Falha ao criar config snapper: $cfg ($mnt)"; return 1; }
+        success "Configuração snapper '$cfg' criada para $mnt"
+      else
+        info "Configuração snapper '$cfg' já existe"
+      fi
+
+      sudo snapper -c "$cfg" set-config \
+        NUMBER_LIMIT=10 \
+        NUMBER_LIMIT_IMPORTANT=5 \
+        TIMELINE_CREATE=yes \
+        TIMELINE_LIMIT_HOURLY="$hourly" \
+        TIMELINE_LIMIT_DAILY="$daily" \
+        TIMELINE_LIMIT_WEEKLY="$weekly" \
+        TIMELINE_LIMIT_MONTHLY=1 \
+        TIMELINE_LIMIT_YEARLY=0 \
+        2>&1 | tee -a "$LOG_FILE" || return 1
+
+      # Permitir que o usuário atual gerencie snapshots sem sudo
+      sudo snapper -c "$cfg" set-config \
+        ALLOW_USERS="$USER" \
+        SYNC_ACL=yes \
+        2>&1 | tee -a "$LOG_FILE" || true
+    }
+
+    # / (subvolume @) — snapshots pre/post do sistema via DNF
+    configure_snapper "root" "/" "3" "7" "2" \
+      || STEP_ERRORS=$((STEP_ERRORS+1))
+
+    # /home (subvolume @home) — snapshots dos seus arquivos pessoais
+    # Frequência maior pois mudanças de config/projeto acontecem o tempo todo
+    if mountpoint -q /home; then
+      configure_snapper "home" "/home" "5" "14" "4" \
         || STEP_ERRORS=$((STEP_ERRORS+1))
-      success "Configuração snapper para / criada"
     else
-      info "Configuração snapper para / já existe"
+      info "/home não é um mountpoint separado — pulando config snapper para home"
     fi
 
-    # Limites de retenção
-    sudo snapper -c root set-config \
-      NUMBER_LIMIT=10 \
-      NUMBER_LIMIT_IMPORTANT=5 \
-      TIMELINE_CREATE=yes \
-      TIMELINE_LIMIT_HOURLY=3 \
-      TIMELINE_LIMIT_DAILY=7 \
-      TIMELINE_LIMIT_WEEKLY=2 \
-      TIMELINE_LIMIT_MONTHLY=1 \
-      TIMELINE_LIMIT_YEARLY=0 \
-      2>&1 | tee -a "$LOG_FILE" || STEP_ERRORS=$((STEP_ERRORS+1))
+    # Excluir /var/lib/containers dos snapshots de /
+    # (Podman armazena imagens e layers aqui — muda constantemente)
+    BTRFS_CONTAINERS="/var/lib/containers"
+    if [[ -d "$BTRFS_CONTAINERS" ]]; then
+      # Verificar se já é subvolume (Fedora às vezes cria automaticamente)
+      if ! sudo btrfs subvolume show "$BTRFS_CONTAINERS" &>/dev/null; then
+        info "$BTRFS_CONTAINERS não é subvolume — criando para excluí-lo dos snapshots"
+        # Mover conteúdo para subvolume próprio
+        sudo btrfs subvolume create "${BTRFS_CONTAINERS}.new" 2>/dev/null && \
+          sudo rsync -a "${BTRFS_CONTAINERS}/" "${BTRFS_CONTAINERS}.new/" 2>/dev/null && \
+          sudo mv "$BTRFS_CONTAINERS" "${BTRFS_CONTAINERS}.old" && \
+          sudo mv "${BTRFS_CONTAINERS}.new" "$BTRFS_CONTAINERS" && \
+          sudo rm -rf "${BTRFS_CONTAINERS}.old" && \
+          success "$BTRFS_CONTAINERS convertido para subvolume (excluído dos snapshots)" \
+          || warn "Não foi possível converter $BTRFS_CONTAINERS para subvolume — snapshots de root podem ficar grandes"
+      else
+        info "$BTRFS_CONTAINERS já é subvolume — automaticamente excluído dos snapshots ✓"
+      fi
+    fi
 
+    # Habilitar timers
     sudo systemctl enable --now snapper-timeline.timer snapper-cleanup.timer \
       2>&1 | tee -a "$LOG_FILE" || STEP_ERRORS=$((STEP_ERRORS+1))
 
-    # Arquivo de actions para DNF5 — cria snapshots pre/post em cada transação dnf
+    # -----------------------------------------------------------------
+    # DNF5 Actions — snapshots pre/post automáticos a cada transação dnf
+    # Afeta apenas a config 'root' (transações dnf modificam o sistema, não /home)
+    # -----------------------------------------------------------------
     ACTIONS_DIR="/etc/dnf/libdnf5-plugins/actions.d"
     ACTIONS_FILE="${ACTIONS_DIR}/snapper.actions"
 
@@ -864,22 +919,22 @@ if should_run 13; then
 # Captura o comando dnf que está sendo executado
 pre_transaction::::/usr/bin/sh -c echo\ "tmp.cmd=$(ps\ -o\ command\ --no-headers\ -p\ '${pid}')"
 
-# Cria snapshot PRE antes da transação
-pre_transaction::::/usr/bin/sh -c echo\ "tmp.snapper_pre_number=$(snapper\ create\ -t\ pre\ -c\ number\ -p\ -d\ '${tmp.cmd}')"
+# Cria snapshot PRE de / antes da transação
+pre_transaction::::/usr/bin/sh -c echo\ "tmp.snapper_pre_number=$(snapper\ -c\ root\ create\ -t\ pre\ -c\ number\ -p\ -d\ '${tmp.cmd}')"
 
-# Cria snapshot POST após a transação (somente se PRE foi criado com sucesso)
-post_transaction::::/usr/bin/sh -c [\ -n\ "${tmp.snapper_pre_number}"\ ]\ &&\ snapper\ create\ -t\ post\ --pre-number\ "${tmp.snapper_pre_number}"\ -c\ number\ -d\ "${tmp.cmd}"\ ;\ echo\ tmp.snapper_pre_number\ ;\ echo\ tmp.cmd
+# Cria snapshot POST de / após a transação (somente se PRE foi criado)
+post_transaction::::/usr/bin/sh -c [\ -n\ "${tmp.snapper_pre_number}"\ ]\ &&\ snapper\ -c\ root\ create\ -t\ post\ --pre-number\ "${tmp.snapper_pre_number}"\ -c\ number\ -d\ "${tmp.cmd}"\ ;\ echo\ tmp.snapper_pre_number\ ;\ echo\ tmp.cmd
 SNAPACTIONS
-      success "snapper.actions criado — snapshots pre/post automáticos em cada dnf"
+      success "snapper.actions criado — snapshots pre/post em cada transação dnf"
     else
       info "snapper.actions já existe"
     fi
 
     if [[ $STEP_ERRORS -eq 0 ]]; then
-      success "Snapper configurado com DNF5 Actions"
-      mark_ok 13 "Snapper (Btrfs · DNF5 Actions)"
+      success "Snapper configurado: root (/) + home (/home) · Podman excluído"
+      mark_ok 13 "Snapper (/ + /home · DNF5 Actions · Podman excluído)"
     else
-      mark_fail 13 "Snapper" "erro na configuração"
+      mark_fail 13 "Snapper" "erro na configuração — verifique o log"
     fi
   fi
   save_step 13
